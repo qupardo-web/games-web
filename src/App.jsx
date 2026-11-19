@@ -4,15 +4,7 @@ const GENRES = ["RPG", "Shooter", "Puzzle"];
 const FILTERS = ["Todos", ...GENRES];
 const MIN_YEAR = 1958;
 const MAX_YEAR = new Date().getFullYear();
-
-const INITIAL_GAMES = [
-  { id: "echo-realm", title: "Echo Realm", genre: "RPG", year: 2024 },
-  { id: "neon-drift", title: "Neon Drift", genre: "Shooter", year: 2023 },
-  { id: "block-logic", title: "Block Logic", genre: "Puzzle", year: 2025 },
-  { id: "ashen-vale", title: "Ashen Vale", genre: "RPG", year: 2022 },
-  { id: "orbit-strike", title: "Orbit Strike", genre: "Shooter", year: 2025 },
-  { id: "mirror-grove", title: "Mirror Grove", genre: "Puzzle", year: 2021 },
-];
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8081";
 
 const EMPTY_FORM = { title: "", genre: "", year: "" };
 
@@ -181,15 +173,17 @@ function GameForm({ form, setForm, formValid, titleRef, onSubmit, onCancel }) {
 }
 
 function App() {
-  const [games, setGames] = useState(INITIAL_GAMES);
+  const [games, setGames] = useState([]);
   const [filter, setFilter] = useState("Todos");
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [status, setStatus] = useState("loading");
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   const dialogRef = useRef(null);
   const titleRef = useRef(null);
   const openerRef = useRef(null);
-  const nextId = useRef(1);
 
   const visible = filter === "Todos" ? games : games.filter((game) => game.genre === filter);
   const total = games.length;
@@ -214,6 +208,34 @@ function App() {
     }
   }, [modalOpen]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadGames() {
+      try {
+        const response = await fetch(`${API_URL}/games`);
+        if (!response.ok) throw new Error("No se pudo cargar el catálogo.");
+        const data = await response.json();
+        if (!cancelled) {
+          setGames(data);
+          setError("");
+          setStatus("ready");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message);
+          setStatus("error");
+        }
+      }
+    }
+
+    setStatus("loading");
+    loadGames();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
   function openModal(event) {
     openerRef.current = event.currentTarget;
     setForm(EMPTY_FORM);
@@ -233,23 +255,47 @@ function App() {
     if (event.target === dialogRef.current) closeModal();
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
     if (!formValid) return;
-    const game = {
-      id: "game-" + nextId.current++,
-      title: form.title.trim(),
-      genre: form.genre,
-      year: yearNumber,
-    };
-    setGames((prev) => [game, ...prev]);
-    setFilter("Todos");
-    setForm(EMPTY_FORM);
-    closeModal();
+
+    try {
+      const response = await fetch(`${API_URL}/games`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: form.title.trim(),
+          genre: form.genre,
+          year: yearNumber,
+        }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(body?.error || "No se pudo guardar el juego.");
+        return;
+      }
+
+      setGames((prev) => [body, ...prev]);
+      setFilter("Todos");
+      setForm(EMPTY_FORM);
+      setError("");
+      closeModal();
+    } catch {
+      setError("No se pudo conectar con la API.");
+    }
   }
 
-  function removeGame(id) {
-    setGames((prev) => prev.filter((game) => game.id !== id));
+  async function removeGame(id) {
+    try {
+      const response = await fetch(`${API_URL}/games/${id}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) {
+        throw new Error("No se pudo eliminar el juego.");
+      }
+      setGames((prev) => prev.filter((game) => game.id !== id));
+      setError("");
+    } catch {
+      setError("No se pudo conectar con la API.");
+    }
   }
 
   return (
@@ -296,7 +342,31 @@ function App() {
           </p>
         </div>
 
-        {total === 0 ? (
+        {error && status === "ready" && (
+          <p className="form-note" role="alert">{error}</p>
+        )}
+
+        {status === "loading" && (
+          <p className="result-count">Cargando catálogo...</p>
+        )}
+
+        {status === "error" && (
+          <section className="empty" role="alert">
+            <h2>No se pudo cargar el catálogo</h2>
+            <p>{error}</p>
+            <div className="empty-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setReloadKey((value) => value + 1)}
+              >
+                Reintentar
+              </button>
+            </div>
+          </section>
+        )}
+
+        {status === "ready" && (total === 0 ? (
           <section className="empty" data-od-id="empty-library" aria-labelledby="empty-library-title">
             <span className="empty-icon"><GamepadIcon /></span>
             <h2 id="empty-library-title">Tu biblioteca está vacía</h2>
@@ -325,7 +395,7 @@ function App() {
               <GameCard key={game.id} game={game} onRemove={removeGame} />
             ))}
           </ul>
-        )}
+        ))}
       </main>
 
       <dialog
